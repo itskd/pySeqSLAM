@@ -1,4 +1,5 @@
 from utils import AttributeDict
+import IPython
 import os
 import numpy as np
 from scipy.io import loadmat, savemat
@@ -43,21 +44,20 @@ class SeqSLAM():
         for i in range(len(self.params.dataset)):
             # shall we just load it?
             filename = '%s/preprocessing-%s%s.mat' % (self.params.dataset[i].savePath, self.params.dataset[i].saveFile, self.params.saveSuffix)
-            if self.params.dataset[i].preprocessing.load and os.path.isfile(filename):         
-                r = loadmat(filename)
+            d = AttributeDict()
+            if self.params.dataset[i].preprocessing.load and os.path.isfile(filename):
                 print('Loading file %s ...' % filename)
-                results.dataset[i].preprocessing = r.results_preprocessing
+                r = loadmat(filename)
+                d.preprocessing = r['results_preprocessing']
             else:
                 # or shall we actually calculate it?
                 p = deepcopy(self.params)    
                 p.dataset = self.params.dataset[i]
-                d = AttributeDict()
                 d.preprocessing = np.copy(SeqSLAM.preprocessing(p))
-                results.dataset.append(d)
-    
                 if self.params.dataset[i].preprocessing.save:
-                    results_preprocessing = results.dataset[i].preprocessing
+                    results_preprocessing = d.preprocessing
                     savemat(filename, {'results_preprocessing': results_preprocessing})
+            results.dataset.append(d)
 
         return results
     
@@ -164,7 +164,7 @@ class SeqSLAM():
             print('Loading image difference matrix from file %s ...' % filename)
     
             d = loadmat(filename)
-            results.D = d.D                                    
+            results.D = d['D']
         else:
             if len(results.dataset)<2:
                 print('Error: Cannot calculate difference matrix with less than 2 datasets.')
@@ -189,8 +189,8 @@ class SeqSLAM():
             a=np.max((0, i-self.params.contrastEnhancement.R/2))
             b=np.min((D.shape[0], i+self.params.contrastEnhancement.R/2+1))                                                        
             v = D[a:b, :]
-            DD[i,:] = (D[i,:] - np.mean(v, 0)) / np.std(v, 0, ddof=1)  
-        
+            DD[i,:] = (D[i,:] - np.mean(v, 0)) / (np.std(v, 0, ddof=1) + 1e-6)
+
         return DD-np.min(np.min(DD))
     
     def doContrastEnhancement(self, results):
@@ -200,7 +200,7 @@ class SeqSLAM():
         if self.params.contrastEnhanced.load and os.path.isfile(filename):    
             print('Loading contrast-enhanced image distance matrix from file %s ...' % filename)
             dd = loadmat(filename)
-            results.DD = dd.DD
+            results.DD = dd['DD']
         else:
             print('Performing local contrast enhancement on difference matrix ...')
                
@@ -240,40 +240,39 @@ class SeqSLAM():
         return results
     
     def getMatches(self, DD):
-        # TODO parallelize
-        matches = np.nan*np.ones((DD.shape[1],2))    
-        # parfor?
+        matches = np.nan*np.ones((DD.shape[1],2))
+
+        # add a line of inf costs so that we penalize running out of data
+        DD = np.vstack((DD, np.infty * np.ones((1, DD.shape[1]))))
+
+        # We shall search for matches using velocities between
+        # params.matching.vmin and params.matching.vmax.
+        # However, not every vskip may be neccessary to check. So we first find
+        # out, which v leads to different trajectories:
+
+        move_min = self.params.matching.vmin * self.params.matching.ds
+        move_max = self.params.matching.vmax * self.params.matching.ds
+
+        move = np.arange(int(move_min), int(move_max) + 1)
+        v = move.astype(float) / self.params.matching.ds
+
+        idx_add = np.tile(np.arange(0, self.params.matching.ds + 1), (len(v), 1))
+        idx_add = np.floor(idx_add * np.tile(v, (idx_add.shape[1], 1)).T)
+
         for N in range(self.params.matching.ds/2, DD.shape[1]-self.params.matching.ds/2):
             # find a single match
             
-            # We shall search for matches using velocities between
-            # params.matching.vmin and params.matching.vmax.
-            # However, not every vskip may be neccessary to check. So we first find
-            # out, which v leads to different trajectories:
-                
-            move_min = self.params.matching.vmin * self.params.matching.ds    
-            move_max = self.params.matching.vmax * self.params.matching.ds    
-            
-            move = np.arange(int(move_min), int(move_max)+1)
-            v = move.astype(float) / self.params.matching.ds
-            
-            idx_add = np.tile(np.arange(0, self.params.matching.ds+1), (len(v),1))
-            idx_add = np.floor(idx_add * np.tile(v, (idx_add.shape[1], 1)).T)
-            
             # this is where our trajectory starts
             n_start = N + 1 - self.params.matching.ds/2    
-            x= np.tile(np.arange(n_start , n_start+self.params.matching.ds+1), (len(v), 1))    
+            x = np.tile(np.arange(n_start , n_start+self.params.matching.ds+1), (len(v), 1))
             
-            #TODO idx_add and x now equivalent to MATLAB, dh 1 indexing
-            score = np.zeros(DD.shape[0])    
-            
-            # add a line of inf costs so that we penalize running out of data
-            DD=np.vstack((DD, np.infty*np.ones((1,DD.shape[1]))))
-                    
-            y_max = DD.shape[0]        
+            #TODO idx_add and x now equivalent to MATLAB, i.e. 1 indexing
+            score = np.zeros(DD.shape[0] - 1)
+
+            y_max = DD.shape[0]
             xx = (x-1) * y_max
             
-            flatDD = DD.flatten(1)
+            flatDD = DD.ravel(1)
             for s in range(1, DD.shape[0]):   
                 y = np.copy(idx_add+s)
                 y[y>y_max]=y_max     
