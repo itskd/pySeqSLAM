@@ -72,7 +72,10 @@ class SeqSLAM():
         print('Preprocessing dataset %s, indices %d - %d ...' % (params.dataset.name, params.dataset.imageIndices[0], params.dataset.imageIndices[-1]))
         # allocate memory for all the processed images
         n = len(params.dataset.imageIndices)
-        m = params.downsample.size[0]*params.downsample.size[1] 
+        m = params.downsample.size[0]*params.downsample.size[1]
+
+        if params.DO_GRAYLEVEL == 0:
+            m = 3 * m
         
         if len(params.dataset.crop) > 0:
             c = params.dataset.crop
@@ -133,10 +136,10 @@ class SeqSLAM():
                 p = img[n[i]:n[i+1], m[j]:m[j+1]]
                 
                 pp=np.copy(p.flatten(1))
-                
+
                 if params.normalization.mode != 0:
                     pp=pp.astype(float)
-                    img[n[i]:n[i+1], m[j]:m[j+1]] = 127+np.reshape(np.round((pp-np.mean(pp))/np.std(pp, ddof=1)), (s, s))
+                    img[n[i]:n[i+1], m[j]:m[j+1]] = 127+np.reshape(np.round((pp-np.mean(pp))/np.std(pp, ddof=1)), p.shape)
                 else:
                     f = 255.0/np.max((1, np.max(pp) - np.min(pp)))
                     img[n[i]:n[i+1], m[j]:m[j+1]] = np.round(f * (p-np.min(pp)))
@@ -229,13 +232,15 @@ class SeqSLAM():
             # make sure ds is dividable by two
             self.params.matching.ds = self.params.matching.ds + np.mod(self.params.matching.ds,2)
         
-            matches = self.getMatches(results.DD)
+            matches, scores = self.getMatches(results.DD)
                    
             # save it
             if self.params.matching.save:
-                savemat(filename, {'matches':matches})
+                savemat(filename, {'matches': matches})
+                savemat(filename, {'scores': scores})
             
             results.matches = matches
+            results.scores = scores
             
         return results
     
@@ -259,6 +264,8 @@ class SeqSLAM():
         idx_add = np.tile(np.arange(0, self.params.matching.ds + 1), (len(v), 1))
         idx_add = np.floor(idx_add * np.tile(v, (idx_add.shape[1], 1)).T)
 
+        scores = np.full((DD.shape[1], DD.shape[0] - 1), np.inf)
+
         for N in range(self.params.matching.ds/2, DD.shape[1]-self.params.matching.ds/2):
             # find a single match
             
@@ -279,7 +286,9 @@ class SeqSLAM():
                 idx = (xx + y).astype(int)
                 ds = np.sum(flatDD[idx-1],1)
                 score[s-1] = np.min(ds)
-            
+
+            offset = self.params.matching.ds/2
+            scores[N, offset:] = score[:-offset]
             
             # find min score and 2nd smallest score outside of a window
             # around the minimum 
@@ -293,6 +302,6 @@ class SeqSLAM():
             match = [min_idx + self.params.matching.ds/2, min_value / min_value_2nd]
             matches[N,:] = match
                 
-        return matches
+        return matches, scores
     
     
