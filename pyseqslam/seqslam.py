@@ -236,8 +236,7 @@ class SeqSLAM():
                    
             # save it
             if self.params.matching.save:
-                savemat(filename, {'matches': matches})
-                savemat(filename, {'scores': scores})
+                savemat(filename, {'matches': matches, 'scores': scores})
             
             results.matches = matches
             results.scores = scores
